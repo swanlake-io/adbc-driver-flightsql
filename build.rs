@@ -33,10 +33,9 @@ impl PackageVariant {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target = env::var("TARGET")?;
     let variant = variant_for_target(&target).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Unsupported target '{target}' for ADBC FlightSQL driver"),
-        )
+        io::Error::other(format!(
+            "Unsupported target '{target}' for ADBC FlightSQL driver"
+        ))
     })?;
 
     let version = env::var("ADBC_FLIGHTSQL_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.to_owned());
@@ -119,10 +118,10 @@ fn download_conda_package(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Erro
     let response = reqwest::blocking::get(url)?;
 
     if !response.status().is_success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to download driver: HTTP {}", response.status()),
-        )
+        return Err(io::Error::other(format!(
+            "Failed to download driver: HTTP {}",
+            response.status()
+        ))
         .into());
     }
 
@@ -153,10 +152,7 @@ fn extract_library(
     }
 
     let pkg_name = pkg_name.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to locate pkg-*.tar archive inside .conda package",
-        )
+        io::Error::other("Failed to locate pkg-*.tar archive inside .conda package")
     })?;
 
     let tar_reader: Box<dyn Read> = if pkg_name.ends_with(".tar.zst") {
@@ -244,11 +240,7 @@ fn find_library_file(
     }
 
     fallback.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to find {lib_filename} inside pkg archive"),
-        )
-        .into()
+        io::Error::other(format!("Failed to find {lib_filename} inside pkg archive")).into()
     })
 }
 
