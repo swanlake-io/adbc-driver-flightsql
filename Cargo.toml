@@ -2,11 +2,11 @@
 name = "adbc-driver-flightsql"
 version = "0.1.0"
 edition = "2021"
-authors = ["SwanLake IO"]
+authors = ["SwanLake"]
 description = "ADBC FlightSQL driver native library distribution for Rust"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/swanlake-io/adbc-driver-flightsql"
-keywords = ["adbc", "flightsql", "arrow", "database"]
+keywords = ["adbc", "flightsql", "arrow", "database", "apache-arrow"]
 categories = ["database"]
 
 [dependencies]
