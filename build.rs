@@ -45,7 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let lib_path = if let Ok(custom_path) = env::var("ADBC_FLIGHTSQL_LIB_PATH") {
-        PathBuf::from(custom_path)
+        let custom_path_buf = PathBuf::from(custom_path);
+        if custom_path_buf.is_dir() {
+            custom_path_buf.join(variant.lib_filename)
+        } else {
+            custom_path_buf
+        }
     } else {
         out_dir.join(variant.lib_filename)
     };

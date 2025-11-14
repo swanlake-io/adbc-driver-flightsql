@@ -37,7 +37,7 @@ time with:
 - `ADBC_FLIGHTSQL_VERSION` – desired package version (e.g. `1.8.0`)
 - `ADBC_FLIGHTSQL_BUILD` – build string matching the requested platform (e.g. `hbbbe3c2_1`)
 - `ADBC_FLIGHTSQL_CHANNEL` – alternate conda channel base URL
-- `ADBC_FLIGHTSQL_LIB_PATH` – custom filesystem path to copy the library to (e.g. `/usr/local/lib/libadbc_driver_flightsql.so`)
+- `ADBC_FLIGHTSQL_LIB_PATH` – custom filesystem path (directory or full file path) to copy the library to (e.g. `/usr/local/lib/` or `/usr/local/lib/libadbc_driver_flightsql.so`)
 
 The selected version is available to consumers through the `DRIVER_VERSION` constant.
 
