@@ -44,7 +44,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel = env::var("ADBC_FLIGHTSQL_CHANNEL").unwrap_or_else(|_| DEFAULT_CHANNEL.to_owned());
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    let lib_path = out_dir.join(variant.lib_filename);
+    let lib_path = if let Ok(custom_path) = env::var("ADBC_FLIGHTSQL_LIB_PATH") {
+        PathBuf::from(custom_path)
+    } else {
+        out_dir.join(variant.lib_filename)
+    };
 
     if lib_path.exists() {
         if fs::metadata(&lib_path)?.len() == 0 {

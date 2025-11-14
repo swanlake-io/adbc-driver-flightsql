@@ -13,7 +13,7 @@ handles platform detection, download, extraction, and version reporting during
 ## Installation
 ```toml
 [dependencies]
-adbc-driver-flightsql = "0.1"
+adbc-driver-flightsql = "0.1.1"
 ```
 
 ## Usage
@@ -37,14 +37,9 @@ time with:
 - `ADBC_FLIGHTSQL_VERSION` – desired package version (e.g. `1.8.0`)
 - `ADBC_FLIGHTSQL_BUILD` – build string matching the requested platform (e.g. `hbbbe3c2_1`)
 - `ADBC_FLIGHTSQL_CHANNEL` – alternate conda channel base URL
+- `ADBC_FLIGHTSQL_LIB_PATH` – custom filesystem path to copy the library to (e.g. `/usr/local/lib/libadbc_driver_flightsql.so`)
 
 The selected version is available to consumers through the `DRIVER_VERSION` constant.
-
-## Supported targets
-- `x86_64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
-- `aarch64-apple-darwin`
-- `x86_64-pc-windows-msvc`
 
 ## License
 Licensed under Apache-2.0
