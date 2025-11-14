@@ -32,14 +32,19 @@ println!("FlightSQL driver version: {DRIVER_VERSION}");
 ```
 
 ## Version control
-The build script bundles version `1.8.0` by default. Override the conda artifact at build
-time with:
-- `ADBC_FLIGHTSQL_VERSION` – desired package version (e.g. `1.8.0`)
-- `ADBC_FLIGHTSQL_BUILD` – build string matching the requested platform (e.g. `hbbbe3c2_1`)
-- `ADBC_FLIGHTSQL_CHANNEL` – alternate conda channel base URL
+The build script downloads the official PyPI wheel (`adbc-driver-flightsql`) for the active
+target. Version `1.9.0` is used by default across all platforms, and developers can
+override the behavior with:
+- `ADBC_FLIGHTSQL_VERSION` – desired PyPI version (e.g. `1.9.0`)
 - `ADBC_FLIGHTSQL_LIB_PATH` – custom filesystem path (directory or full file path) to copy the library to (e.g. `/usr/local/lib/` or `/usr/local/lib/libadbc_driver_flightsql.so`)
 
-The selected version is available to consumers through the `DRIVER_VERSION` constant.
+The resolved version is exported to consuming crates through the `DRIVER_VERSION` constant.
 
+## Supported targets
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
 ## License
 Licensed under Apache-2.0
