@@ -1,32 +1,33 @@
 use std::env;
-use std::fs;
-use std::io::{self, Read};
+use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 
-use tempfile::tempdir;
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use zip::ZipArchive;
 
-const DEFAULT_VERSION: &str = "1.8.0";
-const DEFAULT_CHANNEL: &str = "https://conda.anaconda.org/conda-forge";
-const PACKAGE_NAME: &str = "libadbc-driver-flightsql";
+const DEFAULT_VERSION: &str = "1.9.0";
+const PACKAGE_NAME: &str = "adbc-driver-flightsql";
+const PYPI_BASE: &str = "https://pypi.org/pypi";
 
 #[derive(Clone, Copy)]
 struct PackageVariant {
-    conda_platform: &'static str,
+    wheel_suffix: &'static str,
     lib_filename: &'static str,
-    default_build: &'static str,
 }
 
 impl PackageVariant {
-    const fn new(
-        conda_platform: &'static str,
-        lib_filename: &'static str,
-        default_build: &'static str,
-    ) -> Self {
+    const fn new(wheel_suffix: &'static str, lib_filename: &'static str) -> Self {
         Self {
-            conda_platform,
+            wheel_suffix,
             lib_filename,
-            default_build,
         }
+    }
+
+    fn wheel_filename(&self, version: &str) -> String {
+        format!("adbc_driver_flightsql-{version}-{}", self.wheel_suffix)
     }
 }
 
@@ -38,22 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
     })?;
 
-    let version = env::var("ADBC_FLIGHTSQL_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.to_owned());
-    let build =
-        env::var("ADBC_FLIGHTSQL_BUILD").unwrap_or_else(|_| variant.default_build.to_owned());
-    let channel = env::var("ADBC_FLIGHTSQL_CHANNEL").unwrap_or_else(|_| DEFAULT_CHANNEL.to_owned());
+    let version = env::var("ADBC_FLIGHTSQL_VERSION").unwrap_or_else(|_| DEFAULT_VERSION.into());
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    let lib_path = if let Ok(custom_path) = env::var("ADBC_FLIGHTSQL_LIB_PATH") {
-        let custom_path_buf = PathBuf::from(custom_path);
-        if custom_path_buf.is_dir() {
-            custom_path_buf.join(variant.lib_filename)
-        } else {
-            custom_path_buf
-        }
-    } else {
-        out_dir.join(variant.lib_filename)
-    };
+    let lib_path = resolve_output_path(&variant, &out_dir)?;
 
     if lib_path.exists() {
         if fs::metadata(&lib_path)?.len() == 0 {
@@ -64,25 +53,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if !lib_path.exists() {
-        let url = format!(
-            "{channel}/{platform}/{package}-{version}-{build}.conda",
-            channel = channel.trim_end_matches('/'),
-            platform = variant.conda_platform,
-            package = PACKAGE_NAME,
-            version = version,
-            build = build
-        );
+    let wheel_filename = variant.wheel_filename(&version);
+    let release_meta = fetch_release_metadata(&version)?;
+    let file_meta = release_meta
+        .urls
+        .iter()
+        .find(|file| file.filename == wheel_filename)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "PyPI release {version} missing wheel {wheel_filename}"
+            ))
+        })?;
 
-        println!("cargo:warning=Downloading ADBC FlightSQL driver from {url}");
+    println!(
+        "cargo:warning=Downloading FlightSQL wheel {} ({})",
+        file_meta.filename, file_meta.url
+    );
 
-        let archive = download_conda_package(&url)?;
-        extract_library(&archive, variant.lib_filename, &lib_path)?;
+    let wheel_bytes = download_wheel(&file_meta.url)?;
+
+    if let Some(expected) = file_meta.digests.sha256.as_deref() {
+        verify_sha256(&wheel_bytes, expected)?;
     }
 
+    extract_library_from_wheel(&wheel_bytes, variant.lib_filename, &lib_path)?;
     apply_env_exports(&lib_path, &version);
 
     Ok(())
+}
+
+fn resolve_output_path(
+    variant: &PackageVariant,
+    out_dir: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(custom_path) = env::var("ADBC_FLIGHTSQL_LIB_PATH") {
+        let custom = PathBuf::from(custom_path);
+        if custom.is_dir() {
+            Ok(custom.join(variant.lib_filename))
+        } else {
+            Ok(custom)
+        }
+    } else {
+        Ok(out_dir.join(variant.lib_filename))
+    }
 }
 
 fn apply_env_exports(lib_path: &Path, version: &str) {
@@ -90,181 +103,142 @@ fn apply_env_exports(lib_path: &Path, version: &str) {
         "cargo:rustc-env=ADBC_FLIGHTSQL_LIB_PATH={}",
         lib_path.display()
     );
-    println!("cargo:rustc-env=ADBC_FLIGHTSQL_LIB_VERSION={}", version);
+    println!("cargo:rustc-env=ADBC_FLIGHTSQL_LIB_VERSION={version}");
     println!("cargo:rerun-if-env-changed=ADBC_FLIGHTSQL_VERSION");
-    println!("cargo:rerun-if-env-changed=ADBC_FLIGHTSQL_BUILD");
-    println!("cargo:rerun-if-env-changed=ADBC_FLIGHTSQL_CHANNEL");
+    println!("cargo:rerun-if-env-changed=ADBC_FLIGHTSQL_LIB_PATH");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
 fn variant_for_target(target: &str) -> Option<PackageVariant> {
     match target {
         "x86_64-unknown-linux-gnu" => Some(PackageVariant::new(
-            "linux-64",
+            "py3-none-manylinux1_x86_64.manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_5_x86_64.whl",
             "libadbc_driver_flightsql.so",
-            "h57b9e7f_1",
+        )),
+        "aarch64-unknown-linux-gnu" => Some(PackageVariant::new(
+            "py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+            "libadbc_driver_flightsql.so",
         )),
         "x86_64-apple-darwin" => Some(PackageVariant::new(
-            "osx-64",
-            "libadbc_driver_flightsql.dylib",
-            "h4135a9e_1",
+            "py3-none-macosx_10_15_x86_64.whl",
+            "libadbc_driver_flightsql.so",
         )),
         "aarch64-apple-darwin" => Some(PackageVariant::new(
-            "osx-arm64",
-            "libadbc_driver_flightsql.dylib",
-            "hbbbe3c2_1",
+            "py3-none-macosx_11_0_arm64.whl",
+            "libadbc_driver_flightsql.so",
         )),
         "x86_64-pc-windows-msvc" => Some(PackageVariant::new(
-            "win-64",
+            "py3-none-win_amd64.whl",
             "adbc_driver_flightsql.dll",
-            "h57b9e7f_1",
         )),
         _ => None,
     }
 }
 
-fn download_conda_package(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let response = reqwest::blocking::get(url)?;
-
+fn fetch_release_metadata(version: &str) -> Result<PyPiRelease, Box<dyn std::error::Error>> {
+    let url = format!("{PYPI_BASE}/{PACKAGE_NAME}/{version}/json");
+    let client = Client::new();
+    let response = client.get(url).send()?;
     if !response.status().is_success() {
         return Err(io::Error::other(format!(
-            "Failed to download driver: HTTP {}",
+            "Failed to fetch PyPI metadata: HTTP {}",
+            response.status()
+        ))
+        .into());
+    }
+    Ok(response.json()?)
+}
+
+fn download_wheel(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let client = Client::new();
+    let mut response = client.get(url).send()?;
+    if !response.status().is_success() {
+        return Err(io::Error::other(format!(
+            "Failed to download FlightSQL wheel: HTTP {}",
             response.status()
         ))
         .into());
     }
 
-    Ok(response.bytes()?.to_vec())
+    let mut bytes = Vec::new();
+    response.copy_to(&mut bytes)?;
+    Ok(bytes)
 }
 
-fn extract_library(
-    archive: &[u8],
+fn verify_sha256(bytes: &[u8], expected: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let actual = format!("{digest:x}");
+    if actual != expected {
+        return Err(io::Error::other("Wheel checksum mismatch").into());
+    }
+    Ok(())
+}
+
+fn extract_library_from_wheel(
+    wheel: &[u8],
     lib_filename: &str,
     dest: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let cursor = std::io::Cursor::new(archive);
-    let mut zip = zip::ZipArchive::new(cursor)?;
+    let cursor = std::io::Cursor::new(wheel);
+    let mut archive = ZipArchive::new(cursor)?;
+    let mut lib_entry = None;
 
-    let mut pkg_name = None;
-    let mut pkg_bytes = Vec::new();
-
-    for i in 0..zip.len() {
-        let mut entry = zip.by_index(i)?;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
         let name = entry.name().to_owned();
-
-        if name.starts_with("pkg-") && (name.ends_with(".tar.zst") || name.ends_with(".tar.bz2")) {
-            pkg_bytes.clear();
-            entry.read_to_end(&mut pkg_bytes)?;
-            pkg_name = Some(name);
+        if name.ends_with(lib_filename) {
+            lib_entry = Some((i, name));
             break;
         }
     }
 
-    let pkg_name = pkg_name.ok_or_else(|| {
-        io::Error::other("Failed to locate pkg-*.tar archive inside .conda package")
+    let (index, source_name) = lib_entry.ok_or_else(|| {
+        io::Error::other(format!(
+            "Wheel did not contain {lib_filename}; searched {} entries",
+            archive.len()
+        ))
     })?;
-
-    let tar_reader: Box<dyn Read> = if pkg_name.ends_with(".tar.zst") {
-        Box::new(zstd::stream::read::Decoder::new(&pkg_bytes[..])?)
-    } else {
-        Box::new(bzip2::read::BzDecoder::new(&pkg_bytes[..]))
-    };
-
-    let temp_dir = tempdir()?;
-    let mut archive = tar::Archive::new(tar_reader);
-    archive.unpack(temp_dir.path())?;
-
-    let lib_dir = temp_dir.path().join("lib");
-    let source_path = find_library_file(&lib_dir, lib_filename)?;
 
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::copy(&source_path, dest)?;
+    let mut entry = archive.by_index(index)?;
+    let mut output = File::create(dest)?;
+    io::copy(&mut entry, &mut output)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&source_path)?.permissions();
-        perms.set_mode(0o755);
+        let perms = fs::Permissions::from_mode(0o755);
         fs::set_permissions(dest, perms)?;
     }
 
-    #[cfg(not(unix))]
-    fs::set_permissions(dest, fs::metadata(&source_path)?.permissions())?;
-
     println!(
-        "cargo:warning=Copied ADBC FlightSQL driver from {}",
-        source_path.display()
+        "cargo:warning=Copied ADBC FlightSQL driver from {source_name} into {}",
+        dest.display()
     );
 
     Ok(())
 }
 
-fn find_library_file(
-    lib_dir: &Path,
-    lib_filename: &str,
-) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if !lib_dir.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Package did not contain lib/ directory at {}",
-                lib_dir.display()
-            ),
-        )
-        .into());
-    }
-
-    let exact = lib_dir.join(lib_filename);
-    if exact.exists() {
-        return Ok(fs::canonicalize(exact)?);
-    }
-
-    let (base, ext) = split_library_name(lib_filename);
-    let mut fallback: Option<PathBuf> = None;
-
-    for entry in fs::read_dir(lib_dir)? {
-        let path = entry?.path();
-        let meta = fs::symlink_metadata(&path)?;
-        if !meta.is_file() && !meta.file_type().is_symlink() {
-            continue;
-        }
-
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-
-        if !name.starts_with(&base) {
-            continue;
-        }
-
-        if extension_matches(name, ext.as_deref()) {
-            fallback = Some(fs::canonicalize(&path)?);
-            if meta.is_file() {
-                break;
-            }
-        }
-    }
-
-    fallback.ok_or_else(|| {
-        io::Error::other(format!("Failed to find {lib_filename} inside pkg archive")).into()
-    })
+#[derive(Debug, Deserialize)]
+struct PyPiRelease {
+    urls: Vec<PyPiFile>,
 }
 
-fn split_library_name(name: &str) -> (String, Option<String>) {
-    match name.rsplit_once('.') {
-        Some((base, ext)) => (base.to_owned(), Some(ext.to_owned())),
-        None => (name.to_owned(), None),
-    }
+#[derive(Debug, Deserialize)]
+struct PyPiFile {
+    filename: String,
+    url: String,
+    #[serde(default)]
+    digests: PyPiDigests,
 }
 
-fn extension_matches(candidate: &str, ext: Option<&str>) -> bool {
-    match ext {
-        None => true,
-        Some("so") => candidate.contains(".so"),
-        Some("dylib") => candidate.contains(".dylib"),
-        Some(ext) => candidate.ends_with(&format!(".{ext}")),
-    }
+#[derive(Debug, Default, Deserialize)]
+struct PyPiDigests {
+    #[serde(default)]
+    sha256: Option<String>,
 }
